@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>วิเคราะห์สารละลาย</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-blue-100 min-h-screen flex items-center justify-center p-4">
+  <div class="bg-white p-6 rounded-xl shadow-lg w-full max-w-md space-y-4">
+    <h2 class="text-xl font-bold text-gray-800 text-center">อัปโหลดภาพเพื่อตรวจสอบสารละลาย</h2>
+
+    <input type="file" id="fileInput" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4
+        file:rounded-lg file:border-0 file:text-sm file:font-semibold
+        file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+
+    <p id="fileName" class="text-sm text-gray-500 text-center hidden"></p>
+
+    <button id="analyzeButton" onclick="uploadImage()" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg hover:bg-blue-700 transition disabled:opacity-50">
+      วิเคราะห์
+    </button>
+
+    <div class="flex justify-center">
+      <div id="spinner" class="animate-spin h-6 w-6 border-4 border-blue-400 border-t-transparent rounded-full hidden"></div>
+    </div>
+
+    <div id="result" class="text-center text-lg font-semibold text-gray-700"></div>
+    <div id="converted" class="text-center text-sm text-gray-500"></div>
+
+    <div class="w-full bg-gray-300 rounded-full h-4 mt-2 hidden" id="progressBarContainer">
+      <div class="bg-green-500 h-4 rounded-full transition-all duration-500" id="progressBar" style="width: 0%;"></div>
+    </div>
+
+    <img id="preview" class="mt-4 rounded-lg shadow hidden max-w-full mx-auto"/>
+
+    <div id="alertBox" class="text-red-600 text-sm text-center hidden"></div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const fileNameDisplay = document.getElementById("fileName");
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (file) {
+        fileNameDisplay.textContent = "ไฟล์ที่เลือก: " + file.name;
+        fileNameDisplay.classList.remove("hidden");
+
+        const preview = document.getElementById("preview");
+        preview.src = URL.createObjectURL(file);
+        preview.classList.remove("hidden");
+      }
+    });
+
+    function uploadImage() {
+      const file = fileInput.files[0];
+      const button = document.getElementById("analyzeButton");
+      const spinner = document.getElementById("spinner");
+
+      const result = document.getElementById("result");
+      const converted = document.getElementById("converted");
+      const alertBox = document.getElementById("alertBox");
+
+      if (!file) {
+        alertBox.textContent = "กรุณาเลือกไฟล์ก่อน!";
+        alertBox.classList.remove("hidden");
+        return;
+      } else {
+        alertBox.classList.add("hidden");
+      }
+
+      // UI loading
+      button.disabled = true;
+      button.innerText = "กำลังวิเคราะห์...";
+      spinner.classList.remove("hidden");
+      result.innerText = "";
+      converted.innerText = "";
+      document.getElementById("progressBarContainer").classList.add("hidden");
+      document.getElementById("progressBar").style.width = "0%";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      fetch("/upload", { method: "POST", body: formData })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.error) {
+            result.innerHTML = `<span class="text-red-600 font-medium">${data.error}</span>`;
+            return;
+          }
+
+          if (data.is_solution === false) {
+            result.innerHTML = `<span class="text-red-600">ไม่ใช่สารละลาย (ความมั่นใจ ${data.confidence.toFixed(2)})</span>`;
+            return;
+          }
+
+          const intensity = data.intensity;
+          const convertedValue = (intensity / 255 * 100).toFixed(2) + " mg/L";
+
+          result.innerHTML = `✅ เป็นสารละลาย (ความมั่นใจ ${data.confidence.toFixed(2)})<br>ค่าความเข้มข้น: <b>${intensity}</b>`;
+          converted.innerHTML = `เทียบเท่ากับ: <b>${convertedValue}</b>`;
+
+          document.getElementById("progressBarContainer").classList.remove("hidden");
+          document.getElementById("progressBar").style.width = (intensity / 255 * 100) + "%";
+        })
+        .catch((err) => {
+          result.innerHTML = `<span class="text-red-600">เกิดข้อผิดพลาด: ${err}</span>`;
+        })
+        .finally(() => {
+          button.disabled = false;
+          button.innerText = "วิเคราะห์";
+          spinner.classList.add("hidden");
+        });
+    }
+  </script>
+</body>
+</html>
