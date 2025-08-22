@@ -1,72 +1,54 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
 import tensorflow as tf
 import numpy as np
 from PIL import Image
+import io
 
 app = Flask(__name__)
 
-# โหลดโมเดล
-model_class = tf.keras.models.load_model("classifier_model.h5")
-model_reg = tf.keras.models.load_model("regression_model.h5", compile=False)
-
-IMG_SIZE = (224, 224)
-THRESHOLD = 0.6              # ความมั่นใจขั้นต่ำที่ถือว่า "ใช่สารละลาย"
-INTENSITY_MIN = 10           # ความเข้มข้นขั้นต่ำที่ถือว่าเป็นสารละลายจริง
-
-def prepare_image(image_file):
-    img = Image.open(image_file).convert("RGB")
-    img = img.resize(IMG_SIZE)
-    img_array = np.array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
-
-@app.route("/")
-def index():
-    return render_template("index.html")
+# โหลดโมเดลเพียงครั้งเดียว
+MODEL_PATH = "classifier_model.h5"
+try:
+    model = tf.keras.models.load_model(MODEL_PATH)
+    print("✅ Model loaded successfully")
+except Exception as e:
+    print("❌ Error loading model:", e)
+    model = None
 
 @app.route("/upload", methods=["POST"])
 def upload():
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
+
     if "file" not in request.files:
-        return jsonify({"error": "ไม่พบไฟล์ภาพ"})
+        return jsonify({"error": "No file uploaded"}), 400
 
     file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "ยังไม่ได้เลือกไฟล์"})
 
     try:
-        img = prepare_image(file)
+        # แปลงรูปเป็น array
+        img = Image.open(io.BytesIO(file.read())).convert("RGB").resize((224, 224))
+        arr = np.array(img) / 255.0
+        arr = np.expand_dims(arr, axis=0)
 
-        # ขั้นที่ 1: ทำนายว่าเป็นสารละลายหรือไม่
-        prob = float(model_class.predict(img)[0][0])  # 0.0–1.0 จาก sigmoid
+        # ทำนาย
+        pred = model.predict(arr)[0][0]
+        confidence = float(pred)
 
-        if prob >= THRESHOLD:
-            # ขั้นที่ 2: ทำนายค่าความเข้มข้น
-            pred_value = float(model_reg.predict(img)[0][0])
-            intensity = int(pred_value * 255 / 0.9)
-            intensity = max(0, min(intensity, 255))
+        # กำหนด intensity (ตัวอย่าง ใช้ confidence mapping)
+        intensity = int(confidence * 255)
 
-            # ตรวจสอบว่าเข้มข้นต่ำผิดปกติหรือไม่
-            if intensity < INTENSITY_MIN:
-                return jsonify({
-                    "is_solution": False,
-                    "confidence": round(prob, 2),
-                    "intensity": intensity,
-                    "note": "ค่าความเข้มข้นต่ำเกินไป"
-                })
-
-            return jsonify({
-                "is_solution": True,
-                "confidence": round(prob, 2),
-                "intensity": intensity
-            })
-        else:
-            return jsonify({
-                "is_solution": False,
-                "confidence": round(prob, 2)
-            })
-
+        return jsonify({
+            "is_solution": confidence > 0.5,
+            "confidence": confidence,
+            "intensity": intensity
+        })
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/")
+def home():
+    return "✅ AI Solution Classifier API is running"
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
