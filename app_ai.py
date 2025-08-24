@@ -1,72 +1,100 @@
-from flask import Flask, render_template, request, jsonify
+import os
+from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.utils import secure_filename
 import tensorflow as tf
 import numpy as np
 from PIL import Image
 
+# -------------------------
+# CONFIG
+# -------------------------
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+MODEL_PATH = "classifier_model.h5"
+
 app = Flask(__name__)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# โหลดโมเดล
-model_class = tf.keras.models.load_model("classifier_model.h5")
-model_reg = tf.keras.models.load_model("regression_model.h5", compile=False)
+# โหลดโมเดลล่วงหน้า
+try:
+    model = tf.keras.models.load_model(MODEL_PATH)
+    print("✅ โหลดโมเดลสำเร็จ")
+except Exception as e:
+    print("❌ โหลดโมเดลล้มเหลว:", str(e))
+    model = None
 
-IMG_SIZE = (224, 224)
-THRESHOLD = 0.6              # ความมั่นใจขั้นต่ำที่ถือว่า "ใช่สารละลาย"
-INTENSITY_MIN = 10           # ความเข้มข้นขั้นต่ำที่ถือว่าเป็นสารละลายจริง
 
-def prepare_image(image_file):
-    img = Image.open(image_file).convert("RGB")
-    img = img.resize(IMG_SIZE)
+# -------------------------
+# HELPER
+# -------------------------
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def preprocess_image(image_path, target_size=(224, 224)):
+    """แปลงภาพให้เป็น Tensor สำหรับโมเดล"""
+    img = Image.open(image_path).convert("RGB")
+    img = img.resize(target_size)
     img_array = np.array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
+    return np.expand_dims(img_array, axis=0)
 
+
+# -------------------------
+# ROUTES
+# -------------------------
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return send_from_directory(".", "index.html")
+
 
 @app.route("/upload", methods=["POST"])
-def upload():
-    if "file" not in request.files:
-        return jsonify({"error": "ไม่พบไฟล์ภาพ"})
-
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "ยังไม่ได้เลือกไฟล์"})
-
+def upload_file():
     try:
-        img = prepare_image(file)
+        if "file" not in request.files:
+            return jsonify({"error": "ไม่พบไฟล์ในคำขอ"}), 400
 
-        # ขั้นที่ 1: ทำนายว่าเป็นสารละลายหรือไม่
-        prob = float(model_class.predict(img)[0][0])  # 0.0–1.0 จาก sigmoid
+        file = request.files["file"]
 
-        if prob >= THRESHOLD:
-            # ขั้นที่ 2: ทำนายค่าความเข้มข้น
-            pred_value = float(model_reg.predict(img)[0][0])
-            intensity = int(pred_value * 255 / 0.9)
-            intensity = max(0, min(intensity, 255))
+        if file.filename == "":
+            return jsonify({"error": "ไม่ได้เลือกไฟล์"}), 400
 
-            # ตรวจสอบว่าเข้มข้นต่ำผิดปกติหรือไม่
-            if intensity < INTENSITY_MIN:
-                return jsonify({
-                    "is_solution": False,
-                    "confidence": round(prob, 2),
-                    "intensity": intensity,
-                    "note": "ค่าความเข้มข้นต่ำเกินไป"
-                })
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+            file.save(save_path)
 
-            return jsonify({
-                "is_solution": True,
-                "confidence": round(prob, 2),
-                "intensity": intensity
-            })
-        else:
-            return jsonify({
-                "is_solution": False,
-                "confidence": round(prob, 2)
-            })
+            # -------------------------
+            # รันโมเดล
+            # -------------------------
+            if model is None:
+                return jsonify({"error": "โมเดลยังไม่ถูกโหลด"}), 500
+
+            img_tensor = preprocess_image(save_path)
+            pred = model.predict(img_tensor)[0][0]
+
+            # binary classification
+            is_solution = bool(pred > 0.5)
+            confidence = float(pred if is_solution else 1 - pred)
+
+            # mock intensity (อาจเปลี่ยนตาม use case จริง)
+            intensity = int(np.mean(img_tensor) * 255)
+
+            result = {
+                "is_solution": is_solution,
+                "confidence": confidence,
+                "intensity": intensity,
+            }
+            return jsonify(result), 200
+
+        return jsonify({"error": "ชนิดไฟล์ไม่รองรับ"}), 400
 
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": str(e)}), 500
 
+
+# -------------------------
+# RUN
+# -------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
