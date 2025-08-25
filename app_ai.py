@@ -1,83 +1,59 @@
-import os
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
+import os
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
+from PIL import Image
 import numpy as np
 
-# -----------------------------
-# CONFIG
-# -----------------------------
-UPLOAD_FOLDER = "uploads"
-MODEL_PATH = "classifier_model.h5"
+app = Flask(__name__, static_folder="static", template_folder="static")
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# ✅ โหลดโมเดลตอนเริ่ม (Render จะโหลดทีเดียว)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "classifier_model.h5")
+model = tf.keras.models.load_model(MODEL_PATH)
 
-app = Flask(__name__, template_folder="templates")
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+# ฟังก์ชันเตรียมภาพก่อน predict
+def preprocess_image(filepath):
+    img = Image.open(filepath).convert("RGB").resize((224, 224))
+    img_array = np.array(img) / 255.0
+    return np.expand_dims(img_array, axis=0)
 
-# โหลดโมเดล
-try:
-    model = load_model(MODEL_PATH)
-    print("✅ โหลดโมเดลสำเร็จ")
-except Exception as e:
-    print("❌ โหลดโมเดลไม่สำเร็จ:", e)
-    model = None
-
-
-# -----------------------------
-# ROUTES
-# -----------------------------
+# ✅ หน้าเว็บหลัก
 @app.route("/")
 def index():
-    # เสิร์ฟหน้า index.html ที่อยู่ใน templates/
-    return render_template("index.html")
+    return send_from_directory("static", "index.html")
 
-
+# ✅ API สำหรับอัปโหลดและวิเคราะห์
 @app.route("/upload", methods=["POST"])
 def upload_file():
     if "file" not in request.files:
-        return jsonify({"error": "ไม่พบไฟล์ที่อัปโหลด"}), 400
-
+        return jsonify({"error": "ไม่มีไฟล์"}), 400
+    
     file = request.files["file"]
     if file.filename == "":
-        return jsonify({"error": "กรุณาเลือกไฟล์"}), 400
+        return jsonify({"error": "ไฟล์ไม่ถูกต้อง"}), 400
 
-    # เซฟไฟล์
     filename = secure_filename(file.filename)
-    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(file_path)
+    filepath = os.path.join("/tmp", filename)  # ใช้ /tmp สำหรับ Render
+    file.save(filepath)
 
-    # วิเคราะห์ภาพ
     try:
-        if model is None:
-            return jsonify({"error": "ไม่สามารถโหลดโมเดลได้"}), 500
+        img_tensor = preprocess_image(filepath)
+        prediction = model.predict(img_tensor)[0]
 
-        img = image.load_img(file_path, target_size=(224, 224))
-        img_array = image.img_to_array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-
-        prediction = model.predict(img_array)[0][0]
-        is_solution = prediction > 0.5
-        confidence = float(prediction if is_solution else 1 - prediction)
-
-        # ตัวอย่าง intensity (mock จาก mean pixel)
-        intensity = int(np.mean(img_array) * 255)
+        # สมมติ output = [probability_of_solution]
+        confidence = float(prediction[0])
+        is_solution = confidence > 0.5
+        intensity = int(confidence * 255)  # ตัวอย่างคำนวณ intensity
 
         return jsonify({
-            "is_solution": bool(is_solution),
+            "is_solution": is_solution,
             "confidence": confidence,
             "intensity": intensity
         })
 
     except Exception as e:
-        return jsonify({"error": f"วิเคราะห์ไม่สำเร็จ: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-# -----------------------------
-# MAIN
-# -----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=5000)
