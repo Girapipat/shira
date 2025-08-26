@@ -1,59 +1,58 @@
-from flask import Flask, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
+from flask import Flask, request, jsonify, render_template
 import os
-import tensorflow as tf
-from PIL import Image
 import numpy as np
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+from werkzeug.utils import secure_filename
 
-app = Flask(__name__, static_folder="static", template_folder="static")
+app = Flask(__name__)
 
-# ✅ โหลดโมเดลตอนเริ่ม (Render จะโหลดทีเดียว)
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "classifier_model.h5")
-model = tf.keras.models.load_model(MODEL_PATH)
+# โหลดโมเดล
+MODEL_PATH = os.path.join("models", "classifier_model.h5")
+model = load_model(MODEL_PATH)
 
-# ฟังก์ชันเตรียมภาพก่อน predict
-def preprocess_image(filepath):
-    img = Image.open(filepath).convert("RGB").resize((224, 224))
-    img_array = np.array(img) / 255.0
-    return np.expand_dims(img_array, axis=0)
-
-# ✅ หน้าเว็บหลัก
 @app.route("/")
-def index():
-    return send_from_directory("static", "index.html")
+def home():
+    return render_template("index.html")  # เรียกใช้ index.html จาก templates/
 
-# ✅ API สำหรับอัปโหลดและวิเคราะห์
 @app.route("/upload", methods=["POST"])
-def upload_file():
+def upload():
     if "file" not in request.files:
-        return jsonify({"error": "ไม่มีไฟล์"}), 400
-    
+        return jsonify({"error": "ไม่มีไฟล์ที่อัปโหลด"})
+
     file = request.files["file"]
     if file.filename == "":
-        return jsonify({"error": "ไฟล์ไม่ถูกต้อง"}), 400
+        return jsonify({"error": "กรุณาเลือกไฟล์"})
 
     filename = secure_filename(file.filename)
-    filepath = os.path.join("/tmp", filename)  # ใช้ /tmp สำหรับ Render
+    filepath = os.path.join("uploads", filename)
+    os.makedirs("uploads", exist_ok=True)
     file.save(filepath)
 
     try:
-        img_tensor = preprocess_image(filepath)
-        prediction = model.predict(img_tensor)[0]
+        # โหลดรูปและแปลงให้อยู่ในรูปแบบที่โมเดลต้องการ
+        img = image.load_img(filepath, target_size=(150, 150))
+        img_array = image.img_to_array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
 
-        # สมมติ output = [probability_of_solution]
-        confidence = float(prediction[0])
-        is_solution = confidence > 0.5
-        intensity = int(confidence * 255)  # ตัวอย่างคำนวณ intensity
+        # พยากรณ์
+        prediction = model.predict(img_array)[0][0]  
+        confidence = float(prediction)
 
-        return jsonify({
-            "is_solution": is_solution,
+        # ค่าความเข้มจำลอง (mock)
+        intensity = int(confidence * 255)
+
+        result = {
+            "is_solution": confidence > 0.5,
             "confidence": confidence,
             "intensity": intensity
-        })
+        }
+
+        return jsonify(result)
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+        return jsonify({"error": str(e)})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
